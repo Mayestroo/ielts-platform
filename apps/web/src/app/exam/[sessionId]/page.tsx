@@ -4,12 +4,14 @@ import React, { useEffect, useState, use } from 'react';
 import { useExamStore } from '@/stores/examStore';
 import { useAutosaveSync } from '@/hooks/useAutosaveSync';
 import { useControlSocket } from '@/hooks/useControlSocket';
+import { useTelemetrySocket } from '@/hooks/useTelemetrySocket';
 import { ExamHeader } from '@/components/exam/ExamHeader';
 import { SplitResizer } from '@/components/exam/SplitResizer';
 import { PassageViewer } from '@/components/exam/PassageViewer';
 import { PartNavigator } from '@/components/exam/PartNavigator';
 import { AudioPlayerBar } from '@/components/exam/AudioPlayerBar';
 import { SubmitModal } from '@/components/exam/SubmitModal';
+import { InfractionWarningModal } from '@/components/exam/InfractionWarningModal';
 import { QuestionRenderer } from '@/components/questions/QuestionRenderer';
 import { Loader2, AlertCircle } from 'lucide-react';
 
@@ -24,16 +26,42 @@ export default function ExamPage({ params }: PageProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Anti-Cheating Warning Modal State
+  const [warningModal, setWarningModal] = useState<{
+    isOpen: boolean;
+    infractionCount: number;
+    reason: string;
+  }>({
+    isOpen: false,
+    infractionCount: 0,
+    reason: '',
+  });
+
   const session = useExamStore((s) => s.session);
   const currentPart = useExamStore((s) => s.currentPart);
 
-  // 1. Attach Real-Time Control Channel WebSocket
+  // 1. High-Priority Control Channel WebSocket
   useControlSocket(sessionId);
 
-  // 2. Attach Offline Write-Ahead Autosave Synchronization
+  // 2. Low-Priority Telemetry Channel & Focus Monitoring
+  useTelemetrySocket({
+    sessionId,
+    onInfraction: (count, reason) => {
+      // 1-2 infractions display client warning modal (ADR-0003)
+      if (count <= 2) {
+        setWarningModal({
+          isOpen: true,
+          infractionCount: count,
+          reason,
+        });
+      }
+    },
+  });
+
+  // 3. Offline Write-Ahead Autosave Synchronization
   useAutosaveSync(sessionId);
 
-  // 3. Fetch Session Data on mount
+  // 4. Fetch Session Data on mount
   useEffect(() => {
     let isMounted = true;
 
@@ -156,6 +184,14 @@ export default function ExamPage({ params }: PageProps) {
 
       <PartNavigator />
       <SubmitModal />
+
+      {/* Anti-Cheating Warning Modal */}
+      <InfractionWarningModal
+        isOpen={warningModal.isOpen}
+        infractionCount={warningModal.infractionCount}
+        reason={warningModal.reason}
+        onDismiss={() => setWarningModal((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }
