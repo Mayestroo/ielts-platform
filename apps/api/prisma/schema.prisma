@@ -1,0 +1,292 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  STUDENT
+  ADMIN
+  GRADER
+}
+
+enum Tier {
+  FREE
+  GOLD
+  PREMIUM
+}
+
+enum ModuleType {
+  LISTENING
+  READING
+  WRITING
+  SPEAKING
+}
+
+enum TestFormat {
+  FULL
+  SPLIT
+}
+
+enum TestStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SessionType {
+  SELF_PRACTICE
+  OFFLINE_MOCK
+}
+
+enum SessionStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  PAUSED_DISCONNECTED
+  SUBMITTED
+  FORCE_SUBMITTED
+  EXPIRED
+}
+
+enum ResultVisibility {
+  IMMEDIATE
+  ADMIN_RELEASE
+}
+
+model User {
+  id            String         @id @default(uuid())
+  email         String?        @unique
+  phone         String?        @unique
+  password_hash String
+  full_name     String
+  role          Role           @default(STUDENT)
+  tier          Tier           @default(FREE)
+  created_at    DateTime       @default(now())
+  updated_at    DateTime       @updatedAt
+
+  exam_sessions ExamSession[]
+  devices       SessionDevice[]
+  assignments   Assignment[]   @relation("StudentAssignments")
+  assigned_by   Assignment[]   @relation("AdminAssignments")
+  audit_logs    AuditLog[]
+
+  @@map("users")
+}
+
+model SessionDevice {
+  id                 String    @id @default(uuid())
+  user_id            String
+  device_fingerprint String
+  ip                 String
+  user_agent         String
+  issued_at          DateTime  @default(now())
+  revoked_at         DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, revoked_at])
+  @@map("session_devices")
+}
+
+model Test {
+  id          String     @id @default(uuid())
+  module      ModuleType
+  title       String
+  tier        Tier       @default(FREE)
+  format      TestFormat @default(FULL)
+  status      TestStatus @default(DRAFT)
+  version     Int        @default(1)
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+
+  parts       TestPart[]
+
+  @@unique([title, version])
+  @@map("tests")
+}
+
+model TestPart {
+  id           String      @id @default(uuid())
+  test_id      String
+  module       ModuleType
+  part_number  Int
+  title        String
+  audio_url    String?
+  passage_text String?     @db.Text
+  order_index  Int         @default(0)
+
+  test            Test             @relation(fields: [test_id], references: [id], onDelete: Cascade)
+  question_groups QuestionGroup[]
+  questions       Question[]
+  session_parts   ExamSessionPart[]
+
+  @@index([test_id, order_index])
+  @@map("test_parts")
+}
+
+model QuestionGroup {
+  id                    String     @id @default(uuid())
+  test_part_id          String
+  instruction_text      String     @db.Text
+  range_label           String
+  question_type         String
+  answer_pool_shared    Boolean    @default(false)
+  start_question_number Int
+  end_question_number   Int
+
+  test_part TestPart   @relation(fields: [test_part_id], references: [id], onDelete: Cascade)
+  questions Question[]
+
+  @@map("question_groups")
+}
+
+model Question {
+  id                 String         @id @default(uuid())
+  test_part_id       String
+  question_group_id  String?
+  question_number    Int
+  question_type      String
+  payload            Json
+  points             Int            @default(1)
+  explanation_text   String         @default("") @db.Text
+
+  test_part      TestPart       @relation(fields: [test_part_id], references: [id], onDelete: Cascade)
+  question_group QuestionGroup? @relation(fields: [question_group_id], references: [id], onDelete: SetNull)
+  answers        Answer[]
+
+  @@index([test_part_id, question_number])
+  @@map("questions")
+}
+
+model ExamSession {
+  id                     String           @id @default(uuid())
+  user_id                String
+  session_type           SessionType      @default(SELF_PRACTICE)
+  status                 SessionStatus    @default(IN_PROGRESS)
+  current_module         ModuleType       @default(LISTENING)
+  current_part_id        String
+  server_time_remaining  Int
+  total_duration_seconds Int
+  audio_elapsed_seconds  Int              @default(0)
+  result_visibility      ResultVisibility @default(IMMEDIATE)
+  highlights             Json?            @default("[]")
+  started_at             DateTime         @default(now())
+  submitted_at           DateTime?
+  released_at            DateTime?
+
+  user          User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  answers       Answer[]
+  session_parts ExamSessionPart[]
+
+  @@index([user_id, status])
+  @@map("exam_sessions")
+}
+
+model ExamSessionPart {
+  id                 String        @id @default(uuid())
+  session_id         String
+  test_part_id       String
+  status             SessionStatus @default(IN_PROGRESS)
+  started_at         DateTime      @default(now())
+  ended_at           DateTime?
+  time_spent_seconds Int           @default(0)
+
+  session   ExamSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  test_part TestPart    @relation(fields: [test_part_id], references: [id], onDelete: Cascade)
+
+  @@index([session_id, test_part_id])
+  @@map("exam_session_parts")
+}
+
+model Answer {
+  id             String    @id @default(uuid())
+  session_id     String
+  question_id    String
+  answer_value   Json?
+  answer_version Int       @default(1)
+  is_correct     Boolean?
+  autosaved_at   DateTime  @default(now())
+
+  session  ExamSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  question Question    @relation(fields: [question_id], references: [id], onDelete: Cascade)
+
+  @@unique([session_id, question_id])
+  @@index([session_id, question_id])
+  @@map("answers")
+}
+
+model WritingSubmission {
+  id                 String    @id @default(uuid())
+  session_id         String
+  question_id        String
+  essay_text         String    @db.Text
+  word_count         Int
+  ai_score_breakdown Json?
+  ai_feedback_text   String?   @db.Text
+  overall_band       Float?
+  status             String    @default("pending")
+  graded_at          DateTime?
+
+  @@index([session_id, question_id])
+  @@map("writing_submissions")
+}
+
+model SpeakingScore {
+  id           String   @id @default(uuid())
+  session_id   String   @unique
+  examiner_id  String
+  part_scores  Json
+  overall_band Float
+  audio_url    String?
+  notes        String?  @db.Text
+  graded_at    DateTime @default(now())
+
+  @@map("speaking_scores")
+}
+
+model Assignment {
+  id                          String           @id @default(uuid())
+  user_id                     String
+  assigned_by_id              String
+  test_bundle                 Json
+  scheduled_at                DateTime
+  deadline                    DateTime
+  result_visibility_override  ResultVisibility @default(ADMIN_RELEASE)
+  status                      String           @default("pending")
+
+  user        User @relation("StudentAssignments", fields: [user_id], references: [id], onDelete: Cascade)
+  assigned_by User @relation("AdminAssignments", fields: [assigned_by_id], references: [id], onDelete: Cascade)
+
+  @@map("assignments")
+}
+
+model Certificate {
+  id                 String   @id @default(uuid())
+  user_id            String
+  exam_session_id    String
+  overall_band       Float
+  module_bands       Json
+  certificate_number String   @unique
+  pdf_url            String?
+  issued_at          DateTime @default(now())
+
+  @@map("certificates")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actor_id   String?
+  action     String
+  entity     String
+  entity_id  String?
+  meta       Json?
+  created_at DateTime @default(now())
+
+  actor User? @relation(fields: [actor_id], references: [id], onDelete: SetNull)
+
+  @@index([action, created_at])
+  @@map("audit_logs")
+}
