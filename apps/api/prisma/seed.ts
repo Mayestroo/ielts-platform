@@ -1,9 +1,12 @@
 import { PrismaClient, Role, Tier, ModuleType, TestFormat, TestStatus, SessionType, SessionStatus, ResultVisibility } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('Seeding IELTS platform database...');
+
+  const defaultPasswordHash = await bcrypt.hash('Password123!', 10);
 
   // Clean existing data
   await prisma.answer.deleteMany();
@@ -22,29 +25,31 @@ async function main() {
       id: 'student-user-1',
       email: 'student@ielts.local',
       full_name: 'Jasurbek Rahimberdiyev',
-      password_hash: 'student123_hash',
+      password_hash: defaultPasswordHash,
       role: Role.STUDENT,
       tier: Tier.PREMIUM,
     },
   });
 
-  const admin = await prisma.user.create({
-    data: {
-      id: 'admin-user-1',
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@ielts.local' },
+    update: { password_hash: defaultPasswordHash },
+    create: {
       email: 'admin@ielts.local',
-      full_name: 'Head Administrator',
-      password_hash: 'admin123_hash',
+      password_hash: defaultPasswordHash,
+      full_name: 'Supervisor Admin',
       role: Role.ADMIN,
       tier: Tier.PREMIUM,
     },
   });
 
-  const grader = await prisma.user.create({
-    data: {
-      id: 'grader-user-1',
+  const grader = await prisma.user.upsert({
+    where: { email: 'grader@ielts.local' },
+    update: { password_hash: defaultPasswordHash },
+    create: {
       email: 'grader@ielts.local',
-      full_name: 'Lead IELTS Examiner',
-      password_hash: 'grader123_hash',
+      password_hash: defaultPasswordHash,
+      full_name: 'Examiner Grader',
       role: Role.GRADER,
       tier: Tier.PREMIUM,
     },
