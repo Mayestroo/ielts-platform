@@ -1,0 +1,3 @@
+# Dual-Channel Real-Time WebSocket Architecture
+
+Real-time proctoring telemetry must not contend with mission-critical exam control directives. We decided to structure the Socket.IO real-time layer into two distinct logical channels/namespaces: a high-priority `Control Channel` (for authoritative timer sync, admin commands like time extension or force-submit, and session state transitions) and a lower-priority `Telemetry Channel` (for periodic heartbeats, focus/blur logs, and live-monitor presence). This prevents high-frequency monitoring data from queuing or delaying urgent supervisory actions.
