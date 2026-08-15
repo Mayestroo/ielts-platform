@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { RedisService } from '../redis/redis.service.js';
+import { ProctoringAuthorityService } from '../proctoring/proctoring-authority.service.js';
 import {
   evaluateTextualAnswer,
   roundToNearestHalfIELTS,
@@ -15,8 +16,21 @@ export class ExamSessionService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redis: RedisService,
+    private readonly proctoring: ProctoringAuthorityService,
   ) {}
+
+  @OnEvent('exam.force_submitted')
+  async handleForceSubmittedEvent(payload: { sessionId: string; reason: string; adminId?: string }) {
+    this.logger.log(`Handling decoupled force-submit event for session ${payload.sessionId}: ${payload.reason}`);
+    await this.prisma.examSession.update({
+      where: { id: payload.sessionId },
+      data: {
+        status: SessionStatus.FORCE_SUBMITTED,
+        submitted_at: new Date(),
+        server_time_remaining: 0,
+      },
+    });
+  }
 
   async getSession(sessionId: string) {
     const session = await this.prisma.examSession.findUnique({
@@ -31,12 +45,11 @@ export class ExamSessionService {
       throw new NotFoundException(`Exam session ${sessionId} not found`);
     }
 
-    // Initialize or fetch timer from Redis
-    let timeRemaining = await this.redis.getTimer(sessionId);
-    if (timeRemaining === null) {
-      timeRemaining = session.server_time_remaining;
-      await this.redis.setTimer(sessionId, timeRemaining);
-    }
+    // Authoritative wall-clock timer from ProctoringAuthority
+    const timeRemaining = await this.proctoring.getTimeRemaining(
+      sessionId,
+      session.total_duration_seconds
+    );
 
     // Fetch the active TestPart and its questions
     const currentPart = await this.prisma.testPart.findUnique({
@@ -164,7 +177,7 @@ export class ExamSessionService {
       }
     }
 
-    const timeRemaining = (await this.redis.getTimer(sessionId)) ?? session.server_time_remaining;
+    const timeRemaining = await this.proctoring.getTimeRemaining(sessionId, session.total_duration_seconds);
 
     return {
       success: true,

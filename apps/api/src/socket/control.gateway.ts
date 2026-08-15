@@ -10,8 +10,8 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
-import { RedisService } from '../redis/redis.service.js';
-import { PrismaService } from '../prisma/prisma.service.js';
+import { SocketBroadcasterService } from './socket-broadcaster.service.js';
+import { ProctoringAuthorityService } from '../proctoring/proctoring-authority.service.js';
 
 @WebSocketGateway({
   namespace: '/control',
@@ -20,26 +20,23 @@ import { PrismaService } from '../prisma/prisma.service.js';
     credentials: true,
   },
 })
-export class ControlGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+export class ControlGateway
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer()
   server!: Server;
 
   private readonly logger = new Logger(ControlGateway.name);
   private timerInterval?: NodeJS.Timeout;
-  private activeSessions = new Set<string>();
 
   constructor(
-    private readonly redis: RedisService,
-    private readonly prisma: PrismaService,
+    private readonly broadcaster: SocketBroadcasterService,
+    private readonly proctoring: ProctoringAuthorityService,
   ) {}
 
-  afterInit() {
-    this.logger.log('Socket.IO Control Channel Gateway initialized');
-    this.timerInterval = setInterval(() => {
-      this.tickActiveTimers().catch((err) => {
-        this.logger.error('Error ticking active timers', err);
-      });
-    }, 1000);
+  afterInit(server: Server) {
+    this.broadcaster.setControlServer(server);
+    this.startGlobalTimerTicker();
   }
 
   handleConnection(client: Socket) {
@@ -56,14 +53,14 @@ export class ControlGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     @MessageBody() payload: { session_id: string }
   ) {
     const { session_id } = payload;
-    if (!session_id) return;
+    if (!session_id) return { success: false, error: 'session_id required' };
 
-    client.join(`session_${session_id}`);
-    this.activeSessions.add(session_id);
+    const room = `session_${session_id}`;
+    client.join(room);
+    this.logger.log(`Client ${client.id} joined session room: ${room}`);
 
-    const timeRemaining = (await this.redis.getTimer(session_id)) ?? 3600;
-    client.emit('timer:tick', { time_remaining: timeRemaining });
-    this.logger.log(`Client ${client.id} joined session room: session_${session_id}`);
+    const remaining = await this.proctoring.getTimeRemaining(session_id);
+    return { success: true, time_remaining: remaining };
   }
 
   @SubscribeMessage('session:sync_timer')
@@ -72,58 +69,24 @@ export class ControlGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     @MessageBody() payload: { session_id: string }
   ) {
     const { session_id } = payload;
-    const timeRemaining = (await this.redis.getTimer(session_id)) ?? 3600;
-    return { time_remaining: timeRemaining, audio_elapsed: 0 };
+    const remaining = await this.proctoring.getTimeRemaining(session_id);
+    return { time_remaining: remaining, audio_elapsed: 0 };
   }
 
-  @SubscribeMessage('admin:add_time')
-  async handleAddTime(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { session_id: string; added_seconds: number }
-  ) {
-    const { session_id, added_seconds } = payload;
-    const newTime = await this.redis.addTimerSeconds(session_id, added_seconds);
-    this.server.to(`session_${session_id}`).emit('session:add_time', {
-      added_seconds,
-      new_time_remaining: newTime,
-    });
-    return { success: true, new_time_remaining: newTime };
-  }
+  private startGlobalTimerTicker() {
+    this.timerInterval = setInterval(async () => {
+      const adapter: any =
+        (this.server as any)?.adapter || (this.server as any)?.sockets?.adapter;
+      const rooms: Map<string, Set<string>> | undefined = adapter?.rooms;
+      if (!rooms) return;
 
-  @SubscribeMessage('admin:force_submit')
-  async handleForceSubmit(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { session_id: string; reason: string }
-  ) {
-    const { session_id, reason } = payload;
-    this.server.to(`session_${session_id}`).emit('session:force_submit', { reason });
-    return { success: true };
-  }
-
-  private async tickActiveTimers() {
-    if (this.activeSessions.size === 0) return;
-
-    const adapter: any = (this.server as any)?.adapter || (this.server as any)?.sockets?.adapter;
-    const rooms = adapter?.rooms;
-
-    for (const sessionId of Array.from(this.activeSessions)) {
-      const room = rooms?.get(`session_${sessionId}`);
-      if (!room || room.size === 0) {
-        this.activeSessions.delete(sessionId);
-        continue;
+      for (const [roomName, sockets] of rooms.entries()) {
+        if (roomName.startsWith('session_') && sockets.size > 0) {
+          const sessionId = roomName.replace('session_', '');
+          const remaining = await this.proctoring.getTimeRemaining(sessionId);
+          this.broadcaster.emitTimerTick(sessionId, remaining);
+        }
       }
-
-      const remaining = await this.redis.decrementTimer(sessionId, 1);
-      this.server.to(`session_${sessionId}`).emit('timer:tick', {
-        time_remaining: remaining,
-      });
-
-      if (remaining <= 0) {
-        this.server.to(`session_${sessionId}`).emit('session:force_submit', {
-          reason: 'Time expired',
-        });
-        this.activeSessions.delete(sessionId);
-      }
-    }
+    }, 1000);
   }
 }

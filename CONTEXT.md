@@ -108,6 +108,10 @@ _Avoid_: Command socket, priority line.
 The lower-priority real-time communication channel dedicated to background heartbeats, focus/blur proctoring logs, and live monitoring metrics.
 _Avoid_: Metric socket, background trace.
 
+**Proctoring Authority**:
+The authoritative server-side domain module responsible for managing real-time student presence, Redis timer countdowns, proctoring infraction state persistence, supervisor time extensions, force-termination commands, and dual-channel WebSocket event broadcasts.
+_Avoid_: Proctor service, monitoring manager, socket coordinator.
+
 **Live Monitor**:
 An administrative real-time dashboard displaying active exam sessions, elapsed time, network connectivity status, and proctoring violation alerts.
 _Avoid_: Live view, proctor console, supervisor panel.

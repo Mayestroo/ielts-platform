@@ -120,16 +120,17 @@ export default function AdminLiveMonitorPage() {
         body: JSON.stringify({ added_seconds: seconds }),
       });
       if (res.ok) {
+        const data = await res.json();
         setCandidates((prev) =>
           prev.map((c) =>
             c.session_id === sessionId
-              ? { ...c, time_remaining: c.time_remaining + seconds }
+              ? { ...c, time_remaining: data.newTimeRemaining ?? (c.time_remaining + seconds) }
               : c
           )
         );
       }
     } catch (err) {
-      alert('Failed to add time.');
+      console.error('Failed to add time', err);
     }
   };
 
